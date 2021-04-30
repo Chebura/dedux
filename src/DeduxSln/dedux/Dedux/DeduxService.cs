@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -31,31 +32,41 @@ namespace dedux.Dedux
             await ScanAsync(cancellationToken);
         }
 
+        private string GetHex(byte[] bytes)
+        {
+            var sb = new StringBuilder();
+            foreach (var bt in bytes)
+                sb.Append(bt.ToString("x2"));
+            return sb.ToString();
+        }
+
         private async Task ScanAsync(CancellationToken cancellationToken)
         {
             _logger.LogInformation("Loading cache ...");
 
-            await using var cacheFile = new FileStream(_configuration.CachePath, FileMode.OpenOrCreate,
+            
+            using var md5 = MD5.Create();
+
+            var fnHex = GetHex(md5.ComputeHash(
+                Encoding.UTF8.GetBytes(AppDomain.CurrentDomain.BaseDirectory + "?" +
+                                       string.Join(';', _configuration.TargetDirs))));
+
+            var cacheFilename = Path.Combine(_configuration.CachePath, fnHex + ".bin");
+
+            if (!Directory.Exists(_configuration.CachePath))
+                Directory.CreateDirectory(_configuration.CachePath);
+
+            await using var cacheFile = new FileStream(cacheFilename, FileMode.OpenOrCreate,
                 FileAccess.ReadWrite,
                 FileShare.None, 1024, true);
 
+            
             var hashtab = new Hashtable();
 
             var cache = Serializer.Deserialize(cacheFile, new CacheDirectory()
             {
-                Data = new List<CacheData>(),
-                TargetPath = _configuration.TargetDir,
-                BaseDir = AppDomain.CurrentDomain.BaseDirectory
+                Data = new List<CacheData>()
             });
-
-            if (!string.Equals(cache.TargetPath, _configuration.TargetDir) ||
-                !string.Equals(cache.BaseDir, AppDomain.CurrentDomain.BaseDirectory))
-            {
-                _logger.LogInformation("Clear cache.");
-                cache.BaseDir = AppDomain.CurrentDomain.BaseDirectory;
-                cache.TargetPath = _configuration.TargetDir;
-                cache.Data.Clear();
-            }
 
             foreach (var item in cache.Data)
             {
@@ -67,7 +78,13 @@ namespace dedux.Dedux
 
             cache.Data.Clear();
 
-            var files = Directory.GetFiles(_configuration.TargetDir, "*", SearchOption.AllDirectories);
+            var files = _configuration.TargetDirs.SelectMany(target =>
+                {
+                    _logger.LogInformation($"Scanning dir: {target}");
+                        return Directory.GetFiles(target, _configuration.TargetDirSearchPattern,
+                            SearchOption.AllDirectories);
+                    })
+                .ToArray();
 
             long i = 0, max = files.Length, j = -1;
 
@@ -77,7 +94,7 @@ namespace dedux.Dedux
             {
                 var perc = ((i++) * 100) / max;
 
-                var (item, isnew) = await CreateNewCacheAsync(hashtab, file);
+                var (item, isnew) = await CreateNewCacheAsync(hashtab, file, md5);
 
                 if (isnew)
                     needToUpdateCache = true;
@@ -134,11 +151,10 @@ namespace dedux.Dedux
             await cacheFile.FlushAsync(cancellationToken);
         }
 
-        private async Task<(CacheData, bool)> CreateNewCacheAsync(Hashtable oldCache, string path)
+        private async Task<(CacheData, bool)> CreateNewCacheAsync(Hashtable oldCache, string path, MD5 md5)
         {
             var info = new FileInfo(path);
             var ts = new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeSeconds();
-            using var md5 = MD5.Create();
             var nameHash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
             var obj = oldCache[Convert.ToBase64String(nameHash)];
 

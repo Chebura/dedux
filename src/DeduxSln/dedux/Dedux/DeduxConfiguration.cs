@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 
 namespace dedux.Dedux
 {
@@ -6,7 +7,9 @@ namespace dedux.Dedux
     {
         public string SourceDir { get; set; }
 
-        public string TargetDir { get; set; }
+        public ICollection<string> TargetDirs { get; set; }
+
+        public string TargetDirSearchPattern { get; set; } = "*";
 
         public string CachePath { get; set; }
 
