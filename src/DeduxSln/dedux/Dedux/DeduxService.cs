@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -92,6 +93,8 @@ namespace dedux.Dedux
 
             foreach (var file in files)
             {
+                _logger.LogTrace(file);
+
                 var perc = ((i++) * 100) / max;
 
                 var (item, isnew) = await CreateNewCacheAsync(hashtab, file, md5);
@@ -123,6 +126,13 @@ namespace dedux.Dedux
             {
                 _logger.LogInformation($"Duplicates found ({duplicates.Count()})");
                 
+                if (File.Exists(_configuration.DuplicatesPath))
+                {
+                    _logger.LogInformation(
+                        $"Duplicates file report `{_configuration.DuplicatesPath}` found and will be deleted.");
+                    File.Delete(_configuration.DuplicatesPath);
+                }
+
                 await using var duplicatesFile = new FileStream(_configuration.DuplicatesPath, FileMode.CreateNew,
                     FileAccess.Write, FileShare.None, 1024, true);
 
@@ -138,6 +148,32 @@ namespace dedux.Dedux
                 }
 
                 await duplicatesFile.FlushAsync(cancellationToken);
+
+                _logger.LogInformation(
+                    $"Duplicates file report `{_configuration.DuplicatesPath}` saved.");
+
+                if (_configuration.DuplicateDelete && (_configuration.DeletingMasks?.Any() ?? false))
+                {
+                    foreach (var mask in _configuration.DeletingMasks)
+                    {
+                        _logger.LogInformation("Deleting duplicates by mask `{0}`", mask);
+
+                        foreach (var group in duplicates)
+                        {
+                            var g = group.Where(x => Fits(x.Path, mask)).Select(x => x.Path);
+                            if (g.Count() < group.Count())
+                            {
+                                foreach (var fileForDelete in g)
+                                {
+                                    _logger.LogDebug("Deleting: `{0}`", fileForDelete);
+                                    File.Delete(fileForDelete);
+                                }
+                            }
+                        }
+                        
+                        
+                    }
+                }
             }
 
             if (needToUpdateCache)
@@ -194,6 +230,13 @@ namespace dedux.Dedux
         {
             return items.GroupBy(x => x.BodyHash, x => x, (k, elems) => elems, new StructuralEqualityComparer())
                 .Where(x => x.Count() > 1);
+        }
+
+        private static bool Fits(string sFileName, string sFileMask)
+        {
+            var convertedMask = "^" + Regex.Escape(sFileMask).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+            var regexMask = new Regex(convertedMask, RegexOptions.IgnoreCase);
+            return regexMask.IsMatch(sFileName);
         }
     }
 

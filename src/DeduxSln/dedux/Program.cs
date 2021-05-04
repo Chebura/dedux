@@ -33,7 +33,13 @@ namespace dedux
                 configBuilt.GetSection("Dedux").Bind(configuration);
 
                 loggerFactory = LoggerFactory.Create((builder) =>
-                    builder.AddConfiguration(configBuilt.GetSection("Logging")).AddConsole());
+                    {
+                        builder.AddConfiguration(configBuilt.GetSection("Logging")).AddSimpleConsole(options =>
+                            {
+                                options.UseUtcTimestamp = true;
+                                options.TimestampFormat = "HH:mm:ss.fff ";
+                            });
+                    });
             }
             catch (Exception e)
             {

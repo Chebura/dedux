@@ -5,8 +5,6 @@ namespace dedux.Dedux
 {
     public class DeduxConfiguration
     {
-        public string SourceDir { get; set; }
-
         public ICollection<string> TargetDirs { get; set; }
 
         public string TargetDirSearchPattern { get; set; } = "*";
@@ -16,5 +14,9 @@ namespace dedux.Dedux
         public string DuplicatesPath { get; set; }
 
         public TimeSpan? ExecutionTimeout { get; set; }
+
+        public bool DuplicateDelete { get; set; }
+
+        public ICollection<string> DeletingMasks { get; set; }
     }
 }
