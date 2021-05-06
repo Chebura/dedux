@@ -80,7 +80,7 @@ namespace dedux.Dedux
                 await using var duplicatesFile = new FileStream(_configuration.DuplicatesPath, FileMode.CreateNew,
                     FileAccess.Write, FileShare.None, 1024, true);
 
-                await using var sw = new StreamWriter(duplicatesFile);
+                await using var sw = new StreamWriter(duplicatesFile, Encoding.UTF8);
 
                 foreach (var dup in duplicates)
                 {
@@ -109,7 +109,7 @@ namespace dedux.Dedux
                             {
                                 foreach (var fileForDelete in g)
                                 {
-                                    _logger.LogDebug("Deleting: `{0}`", fileForDelete);
+                                    _logger.LogInformation("Deleting: `{0}`", fileForDelete);
                                     File.Delete(fileForDelete);
                                 }
                             }
@@ -122,7 +122,7 @@ namespace dedux.Dedux
                                     {
                                         if (fileForDelete != keepFirst)
                                         {
-                                            _logger.LogDebug("Deleting: `{0}`", fileForDelete);
+                                            _logger.LogInformation("Deleting: `{0}`", fileForDelete);
                                             File.Delete(fileForDelete);
                                         }
                                     }
