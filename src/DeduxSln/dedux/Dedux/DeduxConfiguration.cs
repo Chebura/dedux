@@ -18,5 +18,9 @@ namespace dedux.Dedux
         public bool DuplicateDelete { get; set; }
 
         public ICollection<string> DeletingMasks { get; set; }
+
+        public ICollection<string> DuplicateExclusionMasks { get; set; }
+
+        public bool KeepSingleFileInDirectoryIfMultiple { get; set; }
     }
 }

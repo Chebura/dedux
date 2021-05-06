@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -20,6 +21,7 @@ namespace dedux.Dedux
     {
         private readonly ILogger<DeduxService> _logger;
         private readonly DeduxConfiguration _configuration;
+        private readonly FileNameMaskMatcher _fileNameMaskMatcher = new FileNameMaskMatcher();
 
         public DeduxService(ILogger<DeduxService> logger, DeduxConfiguration configuration)
         {
@@ -43,84 +45,26 @@ namespace dedux.Dedux
 
         private async Task ScanAsync(CancellationToken cancellationToken)
         {
-            _logger.LogInformation("Loading cache ...");
+            _logger.LogInformation("Loading cache, creating file system structure ...");
 
-            
-            using var md5 = MD5.Create();
+            using var listOfCaches = new DisposableList();
 
-            var fnHex = GetHex(md5.ComputeHash(
-                Encoding.UTF8.GetBytes(AppDomain.CurrentDomain.BaseDirectory + "?" +
-                                       string.Join(';', _configuration.TargetDirs))));
-
-            var cacheFilename = Path.Combine(_configuration.CachePath, fnHex + ".bin");
-
-            if (!Directory.Exists(_configuration.CachePath))
-                Directory.CreateDirectory(_configuration.CachePath);
-
-            await using var cacheFile = new FileStream(cacheFilename, FileMode.OpenOrCreate,
-                FileAccess.ReadWrite,
-                FileShare.None, 1024, true);
-
-            
-            var hashtab = new Hashtable();
-
-            var cache = Serializer.Deserialize(cacheFile, new CacheDirectory()
+            foreach (var target in _configuration.TargetDirs)
             {
-                Data = new List<CacheData>()
-            });
-
-            foreach (var item in cache.Data)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                hashtab[Convert.ToBase64String(item.NameHash)] = item;
-            }
-
-            _logger.LogInformation("Creating actual structure ...");
-
-            cache.Data.Clear();
-
-            var files = _configuration.TargetDirs.SelectMany(target =>
-                {
-                    _logger.LogInformation($"Scanning dir: {target}");
-                        return Directory.GetFiles(target, _configuration.TargetDirSearchPattern,
-                            SearchOption.AllDirectories);
-                    })
-                .ToArray();
-
-            long i = 0, max = files.Length, j = -1;
-
-            bool needToUpdateCache = false;
-
-            foreach (var file in files)
-            {
-                _logger.LogTrace(file);
-
-                var perc = ((i++) * 100) / max;
-
-                var (item, isnew) = await CreateNewCacheAsync(hashtab, file, md5);
-
-                if (isnew)
-                    needToUpdateCache = true;
-
-                cache.Data.Add(item);
-
-                if (perc != j && perc % 5 == 0)
-                {
-                    j = perc;
-                    _logger.LogDebug(perc + " %");
-                }
-
+                var cacheContext = await GetCacheDirectoryAsync(target, cancellationToken);
+                listOfCaches.Add(cacheContext);
                 if (cancellationToken.IsCancellationRequested)
-                {
-                    Serializer.Serialize(cacheFile, cache);
-                    _logger.LogInformation("Cancelled. Cache saved.");
-                    return;
-                }
+                    break;
             }
+
+            if (cancellationToken.IsCancellationRequested)
+                await SaveCacheAsync(listOfCaches);
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             _logger.LogInformation("Searching duplicates ...");
 
-            var duplicates = FindDuplicates(cache.Data);
+            var duplicates = FindDuplicates(listOfCaches.SelectMany(x => x.Cache.Data));
 
             if (duplicates.Any())
             {
@@ -160,7 +104,7 @@ namespace dedux.Dedux
 
                         foreach (var group in duplicates)
                         {
-                            var g = group.Where(x => Fits(x.Path, mask)).Select(x => x.Path);
+                            var g = group.Where(x => _fileNameMaskMatcher.IsMatch(x.Path, mask)).Select(x => x.Path);
                             if (g.Count() < group.Count())
                             {
                                 foreach (var fileForDelete in g)
@@ -169,29 +113,131 @@ namespace dedux.Dedux
                                     File.Delete(fileForDelete);
                                 }
                             }
+                            else
+                            {
+                                if (_configuration.KeepSingleFileInDirectoryIfMultiple)
+                                {
+                                    var keepFirst = g.First();
+                                    foreach (var fileForDelete in g)
+                                    {
+                                        if (fileForDelete != keepFirst)
+                                        {
+                                            _logger.LogDebug("Deleting: `{0}`", fileForDelete);
+                                            File.Delete(fileForDelete);
+                                        }
+                                    }
+                                }
+                            }
                         }
                         
                         
                     }
                 }
             }
-
-            if (needToUpdateCache)
-            {
-                Serializer.Serialize(cacheFile, cache);
-                _logger.LogInformation("Cache saved.");
-            }
             else
-                _logger.LogInformation("Structure not changed.");
+            {
+                _logger.LogInformation("There are no duplicates. Deleting: `{0}`", _configuration.DuplicatesPath);
+                File.Delete(_configuration.DuplicatesPath);
+            }
 
-            await cacheFile.FlushAsync(cancellationToken);
+            await SaveCacheAsync(listOfCaches);
+        }
+
+        private async Task SaveCacheAsync(DisposableList listOfCaches)
+        {
+            _logger.LogInformation("Cancelled. Saving cache ...");
+
+            foreach (var cacheContext in listOfCaches)
+            {
+                if (cacheContext.UpdateCache)
+                {
+                    Serializer.Serialize(cacheContext.CacheFile, cacheContext.Cache);
+                    await cacheContext.CacheFile.FlushAsync();
+                }
+            }
+
+            _logger.LogInformation("Cache saved.");
+        }
+
+        private async Task<CacheContext> GetCacheDirectoryAsync(string target, CancellationToken cancellationToken)
+        {
+            _logger.LogDebug($"Preparing target: {target}");
+
+            var cacheContext = new CacheContext();
+
+            using var md5 = MD5.Create();
+
+            var fnHex = GetHex(md5.ComputeHash(
+                Encoding.UTF8.GetBytes(AppDomain.CurrentDomain.BaseDirectory + "?" +
+                                       target)));
+
+            var cacheFilename = Path.Combine(_configuration.CachePath, fnHex + ".bin");
+
+            if (!Directory.Exists(_configuration.CachePath))
+                Directory.CreateDirectory(_configuration.CachePath);
+
+            cacheContext.CacheFile = new FileStream(cacheFilename, FileMode.OpenOrCreate,
+                FileAccess.ReadWrite,
+                FileShare.None, 1024, true);
+
+            
+            var hashtab = new Hashtable();
+
+            cacheContext.Cache = Serializer.Deserialize(cacheContext.CacheFile, new CacheDirectory()
+            {
+                Data = new List<CacheData>()
+            });
+
+            foreach (var item in cacheContext.Cache.Data)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                hashtab[Convert.ToBase64String(item.NameHash)] = item;
+            }
+
+            _logger.LogInformation("Creating actual structure ...");
+
+            cacheContext.Cache.Data.Clear();
+
+            _logger.LogInformation($"Scanning target: {target}");
+            
+            var files =  Directory.GetFiles(target, _configuration.TargetDirSearchPattern,
+                SearchOption.AllDirectories);
+
+            long i = 0, max = files.Length, j = -1;
+
+            foreach (var file in files)
+            {
+                _logger.LogTrace(file);
+
+                var perc = ((i++) * 100) / max;
+
+                var (item, isnew) = await CreateNewCacheAsync(hashtab, file, md5);
+
+                if (isnew)
+                    cacheContext.UpdateCache = true;
+
+                cacheContext.Cache.Data.Add(item);
+
+                if (perc != j && perc % 5 == 0)
+                {
+                    j = perc;
+                    _logger.LogDebug(perc + " %");
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return cacheContext;
+                }
+            }
+
+            return cacheContext;
         }
 
         private async Task<(CacheData, bool)> CreateNewCacheAsync(Hashtable oldCache, string path, MD5 md5)
         {
             var info = new FileInfo(path);
             var ts = new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeSeconds();
-            var nameHash = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
+            var nameHash = md5.ComputeHash(Encoding.UTF8.GetBytes(path));
             var obj = oldCache[Convert.ToBase64String(nameHash)];
 
             if (obj is CacheData cd)
@@ -228,15 +274,59 @@ namespace dedux.Dedux
 
         private IEnumerable<IEnumerable<CacheData>> FindDuplicates(IEnumerable<CacheData> items)
         {
-            return items.GroupBy(x => x.BodyHash, x => x, (k, elems) => elems, new StructuralEqualityComparer())
+            return items.Where(x=>!_fileNameMaskMatcher.IsMatch(x.Path, _configuration.DuplicateExclusionMasks)).GroupBy(x => x.BodyHash, x => x, (k, elems) => elems, new StructuralEqualityComparer())
                 .Where(x => x.Count() > 1);
         }
 
-        private static bool Fits(string sFileName, string sFileMask)
+
+        private class CacheContext : IDisposable
         {
-            var convertedMask = "^" + Regex.Escape(sFileMask).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-            var regexMask = new Regex(convertedMask, RegexOptions.IgnoreCase);
-            return regexMask.IsMatch(sFileName);
+            public CacheDirectory Cache { get; set; }
+
+            public bool UpdateCache { get; set; }
+
+            public FileStream CacheFile { get; set; }
+
+            public void Dispose()
+            {
+                using (CacheFile)
+                {
+                }
+            }
+        }
+
+        private class DisposableList : List<CacheContext>, IDisposable
+        {
+            public void Dispose()
+            {
+                foreach (var i in this)
+                    using (i)
+                    {
+                    }
+            }
+        }
+
+        private class FileNameMaskMatcher
+        {
+            private readonly IDictionary<string, Regex> _rxCache = new ConcurrentDictionary<string, Regex>();
+
+            public bool IsMatch(string fileName, string mask)
+            {
+                if (_rxCache.TryGetValue(mask, out var rx))
+                    return rx.IsMatch(fileName);
+                var convertedMask = "^" + Regex.Escape(mask).Replace("\\*", ".*").Replace("\\?", ".") + "$";
+                rx = new Regex(convertedMask, RegexOptions.IgnoreCase);
+                _rxCache[mask] = rx;
+                return rx.IsMatch(fileName);
+            }
+
+            public bool IsMatch(string fileName, ICollection<string> masks)
+            {
+                if (masks == null)
+                    return false;
+
+                return masks.Any(x => IsMatch(fileName, x));
+            }
         }
     }
 

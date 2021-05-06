@@ -1,20 +1,25 @@
 ﻿using System;
 using System.IO;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
-using dedux.Dedux;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
 namespace dedux
 {
+    using Dedux;
+
     class Program
     {
         static async Task<int> Main(string[] args)
         {
             Environment.ExitCode = 1;
 
-            Console.WriteLine("DEDUX");
+            Console.WriteLine("File system deduplication utility");
+            Console.WriteLine(
+                $"DEDUX v.{Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0"} by Kalianov Dmitry (http://mrald.narod.ru). Read README.md for details.");
+
 
             var configuration = new DeduxConfiguration();
 
