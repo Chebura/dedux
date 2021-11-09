@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +13,8 @@ namespace dedux
 
     class Program
     {
+        private const string AppSettingsFileName = "appsettings.json";
+
         static async Task<int> Main(string[] args)
         {
             Environment.ExitCode = 1;
@@ -19,17 +22,24 @@ namespace dedux
             Console.WriteLine("File system deduplication utility");
             Console.WriteLine(
                 $"DEDUX v.{Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0"} by Kalianov Dmitry (http://mrald.narod.ru). Read README.md for details.");
-
+            Console.WriteLine("Set first argument to specify configuration file (example: dedux.exe c://main.json)");
 
             var configuration = new DeduxConfiguration();
 
             ILoggerFactory loggerFactory;
 
+            Console.WriteLine();
+
+            var directoryPath = args.Length > 0 ? Path.GetDirectoryName(args[0]) : Directory.GetCurrentDirectory();
+            var jsonFileName = args.Length > 0 ? Path.GetFileName(args[0]) : AppSettingsFileName;
+
+            Console.WriteLine($"App settings file path: {Path.Combine(directoryPath, jsonFileName)}");
+
             try
             {
                 var configurationBuilder = new ConfigurationBuilder()
-                    .SetBasePath(Directory.GetCurrentDirectory())
-                    .AddJsonFile("appsettings.json", false, false)
+                    .SetBasePath(directoryPath)
+                    .AddJsonFile(jsonFileName, false, false)
                     .AddCommandLine(args);
 
                 var configBuilt = configurationBuilder
@@ -48,8 +58,8 @@ namespace dedux
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine("Loading settings failed!");
-                Console.Error.WriteLine(e.ToString());
+                await Console.Error.WriteLineAsync("Loading settings failed!");
+                await Console.Error.WriteLineAsync(e.ToString());
                 return 1;
             }
 
@@ -61,7 +71,7 @@ namespace dedux
 
             using var ss = new SemaphoreSlim(0,1);
 
-            Console.CancelKeyPress += (sender, e) =>
+            Console.CancelKeyPress += (_, _) =>
             {
                 try
                 {
@@ -86,7 +96,7 @@ namespace dedux
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine(e.ToString());
+                await Console.Error.WriteLineAsync(e.ToString());
                 ss.Release();
                 return 1;
             }

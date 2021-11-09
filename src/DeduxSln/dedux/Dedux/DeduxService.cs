@@ -14,7 +14,6 @@ using ProtoBuf;
 
 namespace dedux.Dedux
 {
-    
     using Cache;
 
     public class DeduxService
@@ -64,7 +63,7 @@ namespace dedux.Dedux
 
             _logger.LogInformation("Searching duplicates ...");
 
-            var duplicates = FindDuplicates(listOfCaches.SelectMany(x => x.Cache.Data));
+            var duplicates = FindDuplicates(listOfCaches.SelectMany(x => x.Cache.Data)).ToList();
 
             if (duplicates.Any())
             {
@@ -84,10 +83,10 @@ namespace dedux.Dedux
 
                 foreach (var dup in duplicates)
                 {
-                    sw.WriteLine("---");
+                    await sw.WriteLineAsync("---");
                     foreach (var d in dup)
                     {
-                        sw.WriteLine(d.Path);
+                        await sw.WriteLineAsync(d.Path);
                     }
                 }
 
@@ -120,11 +119,9 @@ namespace dedux.Dedux
                                     var keepFirst = g.First();
                                     foreach (var fileForDelete in g)
                                     {
-                                        if (fileForDelete != keepFirst)
-                                        {
-                                            _logger.LogInformation("Deleting: `{0}`", fileForDelete);
-                                            File.Delete(fileForDelete);
-                                        }
+                                        if (fileForDelete == keepFirst) continue;
+                                        _logger.LogInformation("Deleting: `{0}`", fileForDelete);
+                                        File.Delete(fileForDelete);
                                     }
                                 }
                             }
@@ -145,7 +142,7 @@ namespace dedux.Dedux
 
         private async Task SaveCacheAsync(DisposableList listOfCaches)
         {
-            _logger.LogInformation("Cancelled. Saving cache ...");
+            _logger.LogInformation("Saving cache ...");
 
             foreach (var cacheContext in listOfCaches)
             {
@@ -175,6 +172,8 @@ namespace dedux.Dedux
 
             if (!Directory.Exists(_configuration.CachePath))
                 Directory.CreateDirectory(_configuration.CachePath);
+
+            _logger.LogInformation($"Open file cache: {cacheFilename}");
 
             cacheContext.CacheFile = new FileStream(cacheFilename, FileMode.OpenOrCreate,
                 FileAccess.ReadWrite,
@@ -274,7 +273,8 @@ namespace dedux.Dedux
 
         private IEnumerable<IEnumerable<CacheData>> FindDuplicates(IEnumerable<CacheData> items)
         {
-            return items.Where(x=>!_fileNameMaskMatcher.IsMatch(x.Path, _configuration.DuplicateExclusionMasks)).GroupBy(x => x.BodyHash, x => x, (k, elems) => elems, new StructuralEqualityComparer())
+            return items.Where(x => !_fileNameMaskMatcher.IsMatch(x.Path, _configuration.DuplicateExclusionMasks))
+                .GroupBy(x => x.BodyHash, x => x, (_, elems) => elems, new StructuralEqualityComparer())
                 .Where(x => x.Count() > 1);
         }
 
