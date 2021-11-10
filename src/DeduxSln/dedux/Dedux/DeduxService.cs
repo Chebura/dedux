@@ -146,11 +146,10 @@ namespace dedux.Dedux
 
             foreach (var cacheContext in listOfCaches)
             {
-                if (cacheContext.UpdateCache)
-                {
-                    Serializer.Serialize(cacheContext.CacheFile, cacheContext.Cache);
-                    await cacheContext.CacheFile.FlushAsync();
-                }
+                _logger.LogDebug($"Update cache: {cacheContext.CacheFile.Name}");
+                cacheContext.CacheFile.Position = 0;
+                Serializer.Serialize(cacheContext.CacheFile, cacheContext.Cache);
+                await cacheContext.CacheFile.FlushAsync();
             }
 
             _logger.LogInformation("Cache saved.");
@@ -165,8 +164,7 @@ namespace dedux.Dedux
             using var md5 = MD5.Create();
 
             var fnHex = GetHex(md5.ComputeHash(
-                Encoding.UTF8.GetBytes(AppDomain.CurrentDomain.BaseDirectory + "?" +
-                                       target)));
+                Encoding.UTF8.GetBytes(target)));
 
             var cacheFilename = Path.Combine(_configuration.CachePath, fnHex + ".bin");
 
@@ -175,17 +173,30 @@ namespace dedux.Dedux
 
             _logger.LogInformation($"Open file cache: {cacheFilename}");
 
-            cacheContext.CacheFile = new FileStream(cacheFilename, FileMode.OpenOrCreate,
-                FileAccess.ReadWrite,
+            if (!File.Exists(cacheFilename))
+                await File.Create(cacheFilename).DisposeAsync();
+
+            await using var readingStream = new FileStream(cacheFilename, FileMode.OpenOrCreate,
+                FileAccess.Read,
                 FileShare.None, 1024, true);
 
-            
-            var hashtab = new Hashtable();
 
-            cacheContext.Cache = Serializer.Deserialize(cacheContext.CacheFile, new CacheDirectory()
+            var hashtab = new Hashtable();
+            
+            cacheContext.Cache = Serializer.Deserialize(readingStream, new CacheDirectory()
             {
                 Data = new List<CacheData>()
             });
+
+            await using (readingStream)
+            {
+            }
+
+            cacheContext.CacheFile = new FileStream(cacheFilename, FileMode.Truncate,
+                FileAccess.Write,
+                FileShare.None, 1024, true);
+
+            cacheContext.CacheFile.Position = 0;
 
             foreach (var item in cacheContext.Cache.Data)
             {
@@ -204,16 +215,17 @@ namespace dedux.Dedux
 
             long i = 0, max = files.Length, j = -1;
 
+            var filesHashes = new List<string>();
+
             foreach (var file in files)
             {
                 _logger.LogTrace(file);
 
                 var perc = ((i++) * 100) / max;
 
-                var (item, isnew) = await CreateNewCacheAsync(hashtab, file, md5);
+                var (item, _, nameHashAsString) = await CreateNewCacheAsync(hashtab, file, md5);
 
-                if (isnew)
-                    cacheContext.UpdateCache = true;
+                filesHashes.Add(nameHashAsString);
 
                 cacheContext.Cache.Data.Add(item);
 
@@ -229,15 +241,22 @@ namespace dedux.Dedux
                 }
             }
 
+            //check for deleted files
+            var countOfDeletedFiles = hashtab.Keys.OfType<string>().Except(filesHashes).Count();
+
+            if (countOfDeletedFiles > 0)
+                _logger.LogDebug($"Removed files: {countOfDeletedFiles}");
+
             return cacheContext;
         }
 
-        private async Task<(CacheData, bool)> CreateNewCacheAsync(Hashtable oldCache, string path, MD5 md5)
+        private async Task<(CacheData, bool, string)> CreateNewCacheAsync(Hashtable oldCache, string path, MD5 md5)
         {
             var info = new FileInfo(path);
             var ts = new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeSeconds();
             var nameHash = md5.ComputeHash(Encoding.UTF8.GetBytes(path));
-            var obj = oldCache[Convert.ToBase64String(nameHash)];
+            var nameHashAsString = Convert.ToBase64String(nameHash);
+            var obj = oldCache[nameHashAsString];
 
             if (obj is CacheData cd)
             {
@@ -246,10 +265,10 @@ namespace dedux.Dedux
                     //need to recache
                     cd.Timestamp = ts;
                     cd.BodyHash = await GetFileHashAsync(path, md5);
-                    return (cd, true);
+                    return (cd, true, nameHashAsString);
                 }
 
-                return (cd, false); //no need to cache
+                return (cd, false, nameHashAsString); //no need to cache
             }
 
             var data = new CacheData
@@ -260,7 +279,7 @@ namespace dedux.Dedux
                 Path = path
             };
 
-            return (data, true);
+            return (data, true, nameHashAsString);
         }
 
         private async Task<byte[]> GetFileHashAsync(string path, MD5 alg)
@@ -282,8 +301,6 @@ namespace dedux.Dedux
         private class CacheContext : IDisposable
         {
             public CacheDirectory Cache { get; set; }
-
-            public bool UpdateCache { get; set; }
 
             public FileStream CacheFile { get; set; }
 
