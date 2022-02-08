@@ -1,2 +1,4 @@
-﻿1.0.0
+﻿1.1.0
+	[!] Migrated to .net 6
+1.0.0
 	[+] Initial version
